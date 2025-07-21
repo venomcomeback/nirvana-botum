@@ -1,8 +1,9 @@
 # Gerekli kütüphaneleri içe aktarıyoruz.
-# Bu kütüphaneyi yüklemek için: pip install "python-telegram-bot[persistence]"
+# Bu kütüphaneyi yüklemek için: pip install "python-telegram-bot[persistence]" pytz
 import logging
 import uuid
 import os
+import pytz
 from datetime import datetime, time as dt_time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import (
@@ -16,8 +17,12 @@ from telegram.ext import (
     PicklePersistence,
 )
 
-# Botunuzun token'ını buraya yapıştırın. Bu token'ı BotFather'dan alabilirsiniz.
-TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
+# Botunuzun token'ını ortam değişkeninden alın veya buraya yapıştırın.
+# Render'da çalıştırırken, token'ı 'TELEGRAM_BOT_TOKEN' adlı bir ortam değişkeni olarak ayarlayın.
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
+
+# Türkiye saat dilimini tanımlıyoruz.
+TURKISH_TIMEZONE = pytz.timezone("Europe/Istanbul")
 
 # Hata ayıklama için loglamayı etkinleştiriyoruz.
 logging.basicConfig(
@@ -69,20 +74,17 @@ async def send_scheduled_content(context: ContextTypes.DEFAULT_TYPE) -> None:
     text = post_data.get('text')
     photo_file_id = post_data.get('photo_file_id')
 
-    # --- GÜNCELLENMİŞ BLOK BAŞLANGICI ---
     # Kaydedilmiş sözlüklerden MessageEntity nesnelerini güvenli bir şekilde yeniden oluşturur.
     entities = []
     if post_data.get('entities'):
         for entity_dict in post_data['entities']:
-            # 'user' alanı karmaşık bir nesnedir ve bir sözlükten doğrudan yeniden oluşturulamaz.
-            # Hataları önlemek için bu alanı kaldırıyoruz.
-            entity_dict.pop('user', None)
-            entities.append(MessageEntity(**entity_dict))
+            clean_dict = entity_dict.copy()
+            clean_dict.pop('user', None)
+            entities.append(MessageEntity(**clean_dict))
 
     # Kaydedilmiş sözlüklerden InlineKeyboardButton nesnelerini yeniden oluşturur.
     buttons_data = post_data.get('buttons', [])
     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(b['text'], url=b['url']) for b in row] for row in buttons_data]) if buttons_data else None
-    # --- GÜNCELLENMİŞ BLOK SONU ---
 
     try:
         if photo_file_id:
@@ -121,7 +123,6 @@ async def get_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE)
     message = update.message
     post_data = {}
 
-    # Entity'leri JSON-uyumlu bir formata çevirerek saklıyoruz
     def entities_to_dict(entities):
         if not entities:
             return []
@@ -189,17 +190,15 @@ async def get_recurring_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
     photo_file_id = post_data.get('photo_file_id')
     text = post_data.get('text')
 
-    # --- GÜNCELLENMİŞ BLOK BAŞLANGICI ---
-    # Önizleme için Entity ve Butonları güvenli bir şekilde yeniden oluşturur.
     entities = []
     if post_data.get('entities'):
         for entity_dict in post_data['entities']:
-            entity_dict.pop('user', None)
-            entities.append(MessageEntity(**entity_dict))
+            clean_dict = entity_dict.copy()
+            clean_dict.pop('user', None)
+            entities.append(MessageEntity(**clean_dict))
             
     buttons_data = post_data.get('buttons', [])
     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(b['text'], url=b['url']) for b in row] for row in buttons_data]) if buttons_data else None
-    # --- GÜNCELLENMİŞ BLOK SONU ---
 
     await update.message.reply_text("--- GÖNDERİ ÖNİZLEMESİ ---")
     if photo_file_id:
@@ -212,7 +211,7 @@ async def get_recurring_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     confirmation_text = (
         f"Yukarıdaki gönderi, <b>{post_data['channel_id']}</b> kanalına her <b>{selected_days}</b> günü saat "
-        f"<b>{ud['time'].strftime('%H:%M')}</b>'da paylaşılmak üzere ayarlanacak.\n\nOnaylıyor musunuz?"
+        f"<b>{ud['time'].strftime('%H:%M')}</b>'da (Türkiye saati ile) paylaşılmak üzere ayarlanacak.\n\nOnaylıyor musunuz?"
     )
     confirm_buttons = [[InlineKeyboardButton("✅ Onayla ve Zamanla", callback_data="confirm_recurring")], [InlineKeyboardButton("❌ İptal Et", callback_data="cancel_recurring")]]
     await update.message.reply_html(confirmation_text, reply_markup=InlineKeyboardMarkup(confirm_buttons))
@@ -231,14 +230,19 @@ async def schedule_recurring_post(update: Update, context: ContextTypes.DEFAULT_
 
     ud = context.user_data
     job_name = f"recurring_{update.effective_chat.id}_{uuid.uuid4()}"
+    
+    # --- GÜNCELLENMİŞ BLOK ---
+    # Zamanlayıcıyı Türkiye saat dilimine göre ayarlıyoruz.
     context.job_queue.run_daily(
         send_scheduled_content,
         time=ud['time'],
         days=ud['days'],
+        tzinfo=TURKISH_TIMEZONE,  # Saat dilimini burada belirtiyoruz
         chat_id=update.effective_chat.id,
         name=job_name,
         data=ud['post_data']
     )
+    # --- GÜNCELLENMİŞ BLOK SONU ---
 
     await query.edit_message_text("✅ Harika! Gönderiniz başarıyla zamanlandı.")
     context.user_data.clear()
@@ -260,6 +264,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def main() -> None:
     """Botu başlatır ve çalıştırır."""
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == 'YOUR_TELEGRAM_BOT_TOKEN':
+        logger.error("TELEGRAM_BOT_TOKEN bulunamadı! Lütfen kod içinde veya ortam değişkeni olarak ayarlayın.")
+        return
+        
     persistence = PicklePersistence(filepath="channel_helper_bot_data")
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(persistence).build()
 
