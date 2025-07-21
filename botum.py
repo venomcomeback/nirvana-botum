@@ -16,8 +16,8 @@ from telegram.ext import (
     PicklePersistence,
 )
 
-# Botunuzun token'ı.
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+# Botunuzun token'ını buraya yapıştırın. Bu token'ı BotFather'dan alabilirsiniz.
+TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
 
 # Hata ayıklama için loglamayı etkinleştiriyoruz.
 logging.basicConfig(
@@ -67,11 +67,22 @@ async def send_scheduled_content(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     channel_id = post_data.get('channel_id')
     text = post_data.get('text')
-    entities = [MessageEntity(type=e['type'], offset=e['offset'], length=e['length'], url=e.get('url'), user=e.get('user'), language=e.get('language'), custom_emoji_id=e.get('custom_emoji_id')) for e in post_data.get('entities', [])]
     photo_file_id = post_data.get('photo_file_id')
-    
+
+    # --- GÜNCELLENMİŞ BLOK BAŞLANGICI ---
+    # Kaydedilmiş sözlüklerden MessageEntity nesnelerini güvenli bir şekilde yeniden oluşturur.
+    entities = []
+    if post_data.get('entities'):
+        for entity_dict in post_data['entities']:
+            # 'user' alanı karmaşık bir nesnedir ve bir sözlükten doğrudan yeniden oluşturulamaz.
+            # Hataları önlemek için bu alanı kaldırıyoruz.
+            entity_dict.pop('user', None)
+            entities.append(MessageEntity(**entity_dict))
+
+    # Kaydedilmiş sözlüklerden InlineKeyboardButton nesnelerini yeniden oluşturur.
     buttons_data = post_data.get('buttons', [])
-    reply_markup = InlineKeyboardMarkup(buttons_data) if buttons_data else None
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(b['text'], url=b['url']) for b in row] for row in buttons_data]) if buttons_data else None
+    # --- GÜNCELLENMİŞ BLOK SONU ---
 
     try:
         if photo_file_id:
@@ -177,9 +188,18 @@ async def get_recurring_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
     post_data = ud['post_data']
     photo_file_id = post_data.get('photo_file_id')
     text = post_data.get('text')
-    entities = [MessageEntity(type=e['type'], offset=e['offset'], length=e['length'], url=e.get('url'), user=e.get('user'), language=e.get('language'), custom_emoji_id=e.get('custom_emoji_id')) for e in post_data.get('entities', [])]
+
+    # --- GÜNCELLENMİŞ BLOK BAŞLANGICI ---
+    # Önizleme için Entity ve Butonları güvenli bir şekilde yeniden oluşturur.
+    entities = []
+    if post_data.get('entities'):
+        for entity_dict in post_data['entities']:
+            entity_dict.pop('user', None)
+            entities.append(MessageEntity(**entity_dict))
+            
     buttons_data = post_data.get('buttons', [])
     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(b['text'], url=b['url']) for b in row] for row in buttons_data]) if buttons_data else None
+    # --- GÜNCELLENMİŞ BLOK SONU ---
 
     await update.message.reply_text("--- GÖNDERİ ÖNİZLEMESİ ---")
     if photo_file_id:
