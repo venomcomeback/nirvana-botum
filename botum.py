@@ -5,7 +5,7 @@ import uuid
 import os
 import pytz
 from datetime import time as dt_time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -57,6 +57,35 @@ def parse_turkish_days(day_string: str) -> tuple[int, ...] | None:
             return None
     return tuple(sorted(list(set(day_numbers))))
 
+# --- YENİ YARDIMCI GÖNDERME FONKSİYONU ---
+async def _send_content_from_data(bot: Bot, target_chat_id: int | str, post_data: dict) -> None:
+    """Verilen post_data'yı kullanarak içeriği hedefe gönderir."""
+    text = post_data.get('text')
+    photo_file_id = post_data.get('photo_file_id')
+    
+    entities = [MessageEntity.de_json(e, bot) for e in post_data.get('entities', [])]
+    reply_markup = InlineKeyboardMarkup.de_json(post_data.get('reply_markup'), bot) if post_data.get('reply_markup') else None
+
+    try:
+        if photo_file_id:
+            await bot.send_photo(
+                chat_id=target_chat_id,
+                photo=photo_file_id,
+                caption=text,
+                caption_entities=entities,
+                reply_markup=reply_markup
+            )
+        else:
+            await bot.send_message(
+                chat_id=target_chat_id,
+                text=text,
+                entities=entities,
+                reply_markup=reply_markup
+            )
+        logger.info(f"Gönderi {target_chat_id} hedefine başarıyla gönderildi.")
+    except Exception as e:
+        logger.error(f"{target_chat_id} hedefine gönderim başarısız: {e}")
+
 
 # --- GÖNDERİ GÖNDERME FONKSİYONU ---
 
@@ -68,33 +97,9 @@ async def send_scheduled_content(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not post_data:
         logger.warning(f"İş {job.name} için gönderi verisi bulunamadı.")
         return
-
-    channel_id = post_data.get('channel_id')
-    text = post_data.get('text')
-    photo_file_id = post_data.get('photo_file_id')
     
-    entities = [MessageEntity.de_json(e, context.bot) for e in post_data.get('entities', [])]
-    reply_markup = InlineKeyboardMarkup.de_json(post_data.get('reply_markup'), context.bot) if post_data.get('reply_markup') else None
-
-    try:
-        if photo_file_id:
-            await context.bot.send_photo(
-                chat_id=channel_id,
-                photo=photo_file_id,
-                caption=text,
-                caption_entities=entities,
-                reply_markup=reply_markup
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=channel_id,
-                text=text,
-                entities=entities,
-                reply_markup=reply_markup
-            )
-        logger.info(f"Gönderi {channel_id} kanalına başarıyla gönderildi.")
-    except Exception as e:
-        logger.error(f"{channel_id} kanalına gönderim başarısız: {e}")
+    channel_id = post_data.get('channel_id')
+    await _send_content_from_data(context.bot, channel_id, post_data)
 
 
 # --- TEKRARLANAN GÖNDERİ AKIŞI ---
@@ -204,7 +209,8 @@ async def get_recurring_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
     post_data = ud['post_data']
     
     await update.message.reply_text("--- GÖNDERİ ÖNİZLEMESİ ---")
-    await send_scheduled_content(ContextTypes.DEFAULT_TYPE(application=context.application, chat_id=update.effective_chat.id, job=type('Job', (object,), {'data': {'channel_id': update.effective_chat.id, **post_data}})))
+    # Düzeltilen satır: Artık yeni yardımcı fonksiyonu kullanıyoruz.
+    await _send_content_from_data(context.bot, update.effective_chat.id, post_data)
 
     day_names = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     selected_days = ", ".join([day_names[i] for i in ud['days']])
