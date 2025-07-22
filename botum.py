@@ -4,7 +4,7 @@ import logging
 import uuid
 import os
 import pytz
-from datetime import datetime, time as dt_time
+from datetime import time as dt_time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import (
     Application,
@@ -18,7 +18,6 @@ from telegram.ext import (
 )
 
 # Botunuzun token'ını ortam değişkeninden alın veya buraya yapıştırın.
-# Render'da çalıştırırken, token'ı 'TELEGRAM_BOT_TOKEN' adlı bir ortam değişkeni olarak ayarlayın.
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
 
 # Türkiye saat dilimini tanımlıyoruz.
@@ -32,7 +31,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Sohbet adımları için sabitler tanımlıyoruz.
-GET_FORWARDED_POST, GET_RECURRING_CHANNEL, GET_RECURRING_DAYS, GET_RECURRING_TIME, CONFIRM_RECURRING_SCHEDULE = range(5)
+GET_CONTENT, GET_BUTTONS, GET_RECURRING_CHANNEL, GET_RECURRING_DAYS, GET_RECURRING_TIME, CONFIRM_RECURRING_SCHEDULE = range(6)
 
 
 # --- YARDIMCI FONKSİYONLAR ---
@@ -55,14 +54,14 @@ def parse_turkish_days(day_string: str) -> tuple[int, ...] | None:
         if day in day_map:
             day_numbers.append(day_map[day])
         else:
-            return None # Geçersiz gün ismi
+            return None
     return tuple(sorted(list(set(day_numbers))))
 
 
 # --- GÖNDERİ GÖNDERME FONKSİYONU ---
 
 async def send_scheduled_content(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Zamanı geldiğinde kaydedilmiş gönderiyi (fotoğraf veya metin) kanala yollar."""
+    """Zamanı geldiğinde hafızadaki parçalardan gönderiyi inşa edip yollar."""
     job = context.job
     post_data = job.data
 
@@ -73,18 +72,9 @@ async def send_scheduled_content(context: ContextTypes.DEFAULT_TYPE) -> None:
     channel_id = post_data.get('channel_id')
     text = post_data.get('text')
     photo_file_id = post_data.get('photo_file_id')
-
-    # Kaydedilmiş sözlüklerden MessageEntity nesnelerini güvenli bir şekilde yeniden oluşturur.
-    entities = []
-    if post_data.get('entities'):
-        for entity_dict in post_data['entities']:
-            clean_dict = entity_dict.copy()
-            clean_dict.pop('user', None)
-            entities.append(MessageEntity(**clean_dict))
-
-    # Kaydedilmiş sözlüklerden InlineKeyboardButton nesnelerini yeniden oluşturur.
-    buttons_data = post_data.get('buttons', [])
-    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(b['text'], url=b['url']) for b in row] for row in buttons_data]) if buttons_data else None
+    
+    entities = [MessageEntity.de_json(e, context.bot) for e in post_data.get('entities', [])]
+    reply_markup = InlineKeyboardMarkup.de_json(post_data.get('reply_markup'), context.bot) if post_data.get('reply_markup') else None
 
     try:
         if photo_file_id:
@@ -114,38 +104,69 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data.clear()
     await update.message.reply_html(
         "<b>Harika! Tekrarlanacak bir gönderi ayarlayalım.</b>\n\n"
-        "Lütfen zamanlamak istediğiniz gönderiyi (fotoğraf, metin, buton ve premium emoji içerebilir) bana <b>iletin</b>."
+        "Lütfen gönderinin içeriğini (metin, premium emoji, fotoğraf vb.) şimdi gönderin."
     )
-    return GET_FORWARDED_POST
+    return GET_CONTENT
 
-async def get_forwarded_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """İletilen gönderiyi yakalar, kaydeder ve hedef kanalı sorar."""
+async def get_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Gönderinin içeriğini (metin, format, fotoğraf) yakalar ve kaydeder."""
     message = update.message
     post_data = {}
-
-    def entities_to_dict(entities):
-        if not entities:
-            return []
-        return [e.to_dict() for e in entities]
 
     if message.photo:
         post_data['photo_file_id'] = message.photo[-1].file_id
         post_data['text'] = message.caption
-        post_data['entities'] = entities_to_dict(message.caption_entities)
+        post_data['entities'] = [e.to_dict() for e in message.caption_entities]
     elif message.text:
         post_data['text'] = message.text
-        post_data['entities'] = entities_to_dict(message.entities)
+        post_data['entities'] = [e.to_dict() for e in message.entities]
     else:
-        await message.reply_text("Lütfen metin veya fotoğraf içeren bir gönderi iletin.")
-        return GET_FORWARDED_POST
-
-    if message.reply_markup:
-        post_data['buttons'] = [[{'text': b.text, 'url': b.url} for b in row] for row in message.reply_markup.inline_keyboard]
+        await message.reply_text("Lütfen metin veya fotoğraf içeren bir gönderi gönderin.")
+        return GET_CONTENT
 
     context.user_data['post_data'] = post_data
     
     await message.reply_html(
-        "✅ Gönderi kaydedildi.\n\n"
+        "✅ İçerik kaydedildi.\n\n"
+        "Buton eklemek isterseniz şimdi gönderin (Format: <code>Buton Metni - https://link.com</code>).\n\n"
+        "Buton eklemek istemiyorsanız /skip yazın."
+    )
+    return GET_BUTTONS
+
+async def get_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Butonları alır ve hedef kanalı sorar."""
+    buttons_text = update.message.text
+    buttons = []
+    try:
+        for line in buttons_text.split('\n'):
+            row_buttons = []
+            parts = line.split(',')
+            for part in parts:
+                if ' - ' in part:
+                    text, url = part.split(' - ', 1)
+                    row_buttons.append(InlineKeyboardButton(text.strip(), url=url.strip()))
+            if row_buttons:
+                buttons.append(row_buttons)
+        
+        if buttons:
+            reply_markup = InlineKeyboardMarkup(buttons)
+            context.user_data['post_data']['reply_markup'] = reply_markup.to_dict()
+            await update.message.reply_text("✅ Butonlar ayarlandı.")
+        else:
+            await update.message.reply_text("Geçerli buton bulunamadı.")
+
+    except Exception as e:
+        await update.message.reply_text(f"Buton formatı hatalı, lütfen tekrar deneyin. Hata: {e}")
+        return GET_BUTTONS
+
+    await update.message.reply_html("Şimdi bu gönderinin yayınlanacağı <b>kanalın ID'sini</b> veya <b>@kullaniciadini</b> girin:")
+    return GET_RECURRING_CHANNEL
+
+async def skip_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Buton ekleme adımını atlar."""
+    context.user_data['post_data']['reply_markup'] = None
+    await update.message.reply_html(
+        "Buton eklenmedi.\n\n"
         "Şimdi bu gönderinin yayınlanacağı <b>kanalın ID'sini</b> veya <b>@kullaniciadini</b> girin:"
     )
     return GET_RECURRING_CHANNEL
@@ -160,20 +181,14 @@ async def get_recurring_channel(update: Update, context: ContextTypes.DEFAULT_TY
     )
     return GET_RECURRING_DAYS
 
-
 async def get_recurring_days(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Tekrarlanacak günleri alır ve saati sorar."""
     days = parse_turkish_days(update.message.text)
     if days is None:
         await update.message.reply_text("Geçersiz gün ismi. Lütfen tekrar deneyin (Örn: Salı, Perşembe).")
         return GET_RECURRING_DAYS
-    
     context.user_data['days'] = days
-    await update.message.reply_html(
-        "✅ Günler ayarlandı.\n\n"
-        "Peki saat kaçta yayınlansın?\n"
-        "<i>(Format: SS:DD, Örn: 09:30)</i>"
-    )
+    await update.message.reply_html("✅ Günler ayarlandı.\n\nPeki saat kaçta yayınlansın?\n<i>(Format: SS:DD, Örn: 09:30)</i>")
     return GET_RECURRING_TIME
 
 async def get_recurring_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -187,24 +202,9 @@ async def get_recurring_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     ud = context.user_data
     post_data = ud['post_data']
-    photo_file_id = post_data.get('photo_file_id')
-    text = post_data.get('text')
-
-    entities = []
-    if post_data.get('entities'):
-        for entity_dict in post_data['entities']:
-            clean_dict = entity_dict.copy()
-            clean_dict.pop('user', None)
-            entities.append(MessageEntity(**clean_dict))
-            
-    buttons_data = post_data.get('buttons', [])
-    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(b['text'], url=b['url']) for b in row] for row in buttons_data]) if buttons_data else None
-
+    
     await update.message.reply_text("--- GÖNDERİ ÖNİZLEMESİ ---")
-    if photo_file_id:
-        await update.message.reply_photo(photo=photo_file_id, caption=text, caption_entities=entities, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text=text, entities=entities, reply_markup=reply_markup)
+    await send_scheduled_content(ContextTypes.DEFAULT_TYPE(application=context.application, chat_id=update.effective_chat.id, job=type('Job', (object,), {'data': {'channel_id': update.effective_chat.id, **post_data}})))
 
     day_names = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     selected_days = ", ".join([day_names[i] for i in ud['days']])
@@ -231,18 +231,15 @@ async def schedule_recurring_post(update: Update, context: ContextTypes.DEFAULT_
     ud = context.user_data
     job_name = f"recurring_{update.effective_chat.id}_{uuid.uuid4()}"
     
-    # --- GÜNCELLENMİŞ BLOK ---
-    # Zamanlayıcıyı Türkiye saat dilimine göre ayarlıyoruz.
     context.job_queue.run_daily(
         send_scheduled_content,
         time=ud['time'],
         days=ud['days'],
-        tzinfo=TURKISH_TIMEZONE,  # Saat dilimini burada belirtiyoruz
+        tzinfo=TURKISH_TIMEZONE,
         chat_id=update.effective_chat.id,
         name=job_name,
         data=ud['post_data']
     )
-    # --- GÜNCELLENMİŞ BLOK SONU ---
 
     await query.edit_message_text("✅ Harika! Gönderiniz başarıyla zamanlandı.")
     context.user_data.clear()
@@ -274,7 +271,8 @@ def main() -> None:
     schedule_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("schedule", schedule_command)],
         states={
-            GET_FORWARDED_POST: [MessageHandler(filters.ALL & ~filters.COMMAND, get_forwarded_post)],
+            GET_CONTENT: [MessageHandler(filters.TEXT | filters.PHOTO, get_content)],
+            GET_BUTTONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buttons), CommandHandler("skip", skip_buttons)],
             GET_RECURRING_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_recurring_channel)],
             GET_RECURRING_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_recurring_days)],
             GET_RECURRING_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_recurring_time)],
